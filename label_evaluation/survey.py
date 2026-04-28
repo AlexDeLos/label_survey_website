@@ -62,7 +62,7 @@ def load_results():
                 CREATE TABLE IF NOT EXISTS evaluations (
                     username TEXT, study_id TEXT, sample_id TEXT, 
                     label_scores TEXT, comments TEXT, 
-                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """))
             s.commit()
