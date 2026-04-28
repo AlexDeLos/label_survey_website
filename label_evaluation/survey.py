@@ -4,7 +4,7 @@ import os
 import pandas as pd
 import streamlit as st
 import sys
-from sqlalchemy import text  # Import text for raw SQL execution
+from sqlalchemy import text
 
 module_dir = "./"
 sys.path.append(module_dir)
