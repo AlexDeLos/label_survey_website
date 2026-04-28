@@ -1,0 +1,3 @@
+username,study_id,sample_id,label_scores,comments
+researcher1,GSE117416,GSM3294423,"{""tissue"": ""Incorrect"", ""treatment"": ""Correct"", ""medium"": ""Correct"", ""ecotype"": ""Correct"", ""modification"": ""Correct"", ""developmental_stage"": ""Mostly Correct""}",
+researcher1,GSE117416,GSM3294422,"{""tissue"": ""Correct"", ""treatment"": ""Mostly Correct"", ""medium"": ""Incorrect"", ""ecotype"": ""Mostly Correct"", ""modification"": ""Correct"", ""developmental_stage"": ""Correct""}",overall good
