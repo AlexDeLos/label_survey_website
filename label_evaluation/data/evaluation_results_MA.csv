@@ -1,0 +1,3 @@
+username,study_id,sample_id,label_scores,comments,timestamp
+researcher1,GSE10016,GSM253160,"{""tissue"": ""Correct"", ""treatment"": ""Correct"", ""treatment intensity"": ""Mostly Correct"", ""medium"": ""Mostly Correct"", ""ecotype"": ""Mostly Correct"", ""modification"": ""Correct"", ""developmental_stage"": ""Mostly Correct""}",DATABASE TEST 2,2026-04-28 14:43:42
+researcher1,GSE10016,GSM253154,"{""tissue"": ""Mostly Correct"", ""treatment"": ""Mostly Correct"", ""treatment intensity"": ""Correct"", ""medium"": ""Mostly Correct"", ""ecotype"": ""Correct"", ""modification"": ""Mostly Correct"", ""developmental_stage"": ""Mostly Correct""}",ANOTHER DB TEST,2026-04-28 14:44:09
