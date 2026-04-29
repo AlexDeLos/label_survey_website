@@ -1,6 +1,7 @@
 import contextlib
 import json
 import os
+import random
 import pandas as pd
 import streamlit as st
 import sys
@@ -137,11 +138,11 @@ def get_next_sample(all_sample_ids: list[str], username: str, results_df: pd.Dat
         eval_counts = {}
 
     def pick_from(candidates):
-        """From a list of candidates, return first that isn't done or skipped."""
-        # Prefer non-skipped first, fall back to skipped if nothing else available
+        """Randomly pick from candidates, preferring non-skipped. Falls back to skipped if nothing else."""
         non_skipped = [s for s in candidates if s not in skip_ids]
         skipped     = [s for s in candidates if s in skip_ids]
-        return next(iter(non_skipped or skipped), None)
+        pool = non_skipped if non_skipped else skipped
+        return random.choice(pool) if pool else None
 
     # Build candidate pools (excluding samples user already evaluated)
     eligible = [s for s in all_sample_ids if s not in user_done]
