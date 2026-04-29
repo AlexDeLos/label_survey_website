@@ -50,46 +50,44 @@ if not st.session_state.authenticated:
 # PERSISTENT SAVING SOLUTIONS (SQL)
 # ==========================================
 
-# Connection configuration is handled via .streamlit/secrets.toml
 conn = st.connection("results_db", type="sql")
 
 def load_results():
     """Loads results from SQL database, falling back to CSV if DB is empty."""
     try:
         with conn.session as s:
-            # FIX: Use text() for schema creation
             s.execute(text("""
                 CREATE TABLE IF NOT EXISTS evaluations (
-                    username TEXT, study_id TEXT, sample_id TEXT, 
-                    label_scores TEXT, comments TEXT, 
+                    username TEXT, study_id TEXT, sample_id TEXT,
+                    label_scores TEXT, comments TEXT,
                     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """))
             s.commit()
-        
-        # st.connection.query handles text() internally for simple strings
+
         df = conn.query("SELECT * FROM evaluations", ttl=0)
-        
+
         if (df is None or df.empty) and os.path.exists(RESULTS_FILE):
             df = pd.read_csv(RESULTS_FILE)
             if "username" not in df.columns:
                 df["username"] = "unknown_legacy_user"
             return df
-        
-        return df if df is not None else pd.DataFrame(columns=["username", "study_id", "sample_id", "label_scores", "comments"])
+
+        return df if df is not None else pd.DataFrame(
+            columns=["username", "study_id", "sample_id", "label_scores", "comments"]
+        )
     except Exception as e:
         st.error(f"Database Error: {e}")
         return pd.DataFrame(columns=["username", "study_id", "sample_id", "label_scores", "comments"])
 
+
 def save_evaluation(username, study_id, sample_id, label_scores, comments):
     """Saves to SQL and mirrors to local CSV."""
     with conn.session as s:
-        # FIX: Use text() for DELETE statement
         s.execute(
             text("DELETE FROM evaluations WHERE username = :u AND study_id = :st AND sample_id = :sa"),
             params={"u": username, "st": study_id, "sa": sample_id}
         )
-        # FIX: Use text() for INSERT statement
         s.execute(
             text("INSERT INTO evaluations (username, study_id, sample_id, label_scores, comments) "
                  "VALUES (:u, :st, :sa, :ls, :c)"),
@@ -105,6 +103,60 @@ def save_evaluation(username, study_id, sample_id, label_scores, comments):
     df.to_csv(RESULTS_FILE, index=False)
     st.toast("Evaluation Saved", icon="💾")
 
+
+# ==========================================
+# SMART SAMPLE ASSIGNMENT
+# ==========================================
+
+def get_next_sample(all_sample_ids: list[str], username: str, results_df: pd.DataFrame, skip_ids: set[str] = None) -> str | None:
+    """
+    Returns the next sample_id this user should evaluate, based on:
+      - Priority 1: samples with exactly 2 evaluations by OTHER users
+      - Priority 2: samples with exactly 1 evaluation by OTHER users
+      - Priority 3: samples with 0 evaluations by anyone
+    
+    Hard constraints:
+      - The current user must never see a sample they have already evaluated.
+      - skip_ids: samples the user has explicitly skipped this session (excluded for now,
+        but will be reconsidered once higher-priority work runs out).
+    """
+    if skip_ids is None:
+        skip_ids = set()
+
+    # Samples this user has already evaluated — permanently excluded
+    if not results_df.empty:
+        user_done = set(results_df[results_df["username"] == username]["sample_id"].tolist())
+    else:
+        user_done = set()
+
+    # Count evaluations per sample by OTHER users only
+    if not results_df.empty:
+        other_evals = results_df[results_df["username"] != username]
+        eval_counts = other_evals.groupby("sample_id").size().to_dict()
+    else:
+        eval_counts = {}
+
+    def pick_from(candidates):
+        """From a list of candidates, return first that isn't done or skipped."""
+        # Prefer non-skipped first, fall back to skipped if nothing else available
+        non_skipped = [s for s in candidates if s not in skip_ids]
+        skipped     = [s for s in candidates if s in skip_ids]
+        return next(iter(non_skipped or skipped), None)
+
+    # Build candidate pools (excluding samples user already evaluated)
+    eligible = [s for s in all_sample_ids if s not in user_done]
+
+    priority_2 = [s for s in eligible if eval_counts.get(s, 0) == 2]
+    priority_1 = [s for s in eligible if eval_counts.get(s, 0) == 1]
+    priority_0 = [s for s in eligible if eval_counts.get(s, 0) == 0]
+
+    return (
+        pick_from(priority_2)
+        or pick_from(priority_1)
+        or pick_from(priority_0)
+    )
+
+
 # ==========================================
 # MAIN APPLICATION
 # ==========================================
@@ -116,8 +168,6 @@ def load_survey_data():
     with open(PAYLOAD_FILE, encoding="utf-8") as f:
         return json.load(f)
 
-if "current_idx" not in st.session_state:
-    st.session_state.current_idx = 0
 
 st.title("🧬 Sample Label Evaluator")
 
@@ -126,62 +176,98 @@ if not data:
     st.error(f"Could not find '{PAYLOAD_FILE}'. Please ensure the file exists.")
     st.stop()
 
+all_sample_ids = [item["sample_id"] for item in data]
+sample_lookup  = {item["sample_id"]: item for item in data}
+
 results_df = load_results()
-user_results = results_df[results_df["username"] == st.session_state.username] if not results_df.empty else pd.DataFrame()
+username   = st.session_state.username
+
+user_results     = results_df[results_df["username"] == username] if not results_df.empty else pd.DataFrame()
 evaluated_samples = user_results["sample_id"].unique().tolist() if not user_results.empty else []
 
-st.sidebar.header(f"👤 User: {st.session_state.username}")
+# --- Session state: track current assignment and skipped samples ---
+if "assigned_sample_id" not in st.session_state:
+    st.session_state.assigned_sample_id = None
+if "skipped_ids" not in st.session_state:
+    st.session_state.skipped_ids = set()
+
+# Assign a sample if we don't have one yet (or the previous one was just saved/skipped)
+if st.session_state.assigned_sample_id is None:
+    st.session_state.assigned_sample_id = get_next_sample(
+        all_sample_ids, username, results_df, st.session_state.skipped_ids
+    )
+
+# ── Sidebar ────────────────────────────────────────────────────────────────────
+st.sidebar.header(f"👤 User: {username}")
 if st.sidebar.button("Logout"):
-    st.session_state.authenticated = False
-    st.session_state.username = ""
-    st.session_state.current_idx = 0
+    st.session_state.authenticated    = False
+    st.session_state.username         = ""
+    st.session_state.assigned_sample_id = None
+    st.session_state.skipped_ids      = set()
     st.rerun()
 
 st.sidebar.divider()
-total_samples = len(data)
-st.sidebar.write(f"**Your Progress:** {len(evaluated_samples)} / {total_samples} Evaluated")
+
+# Progress: count samples where this user has NOT yet evaluated AND there are
+# still < 3 other-user evaluations (i.e. work remaining for this user)
+if not results_df.empty:
+    other_eval_counts = results_df[results_df["username"] != username].groupby("sample_id").size().to_dict()
+else:
+    other_eval_counts = {}
+
+remaining = sum(
+    1 for s in all_sample_ids
+    if s not in evaluated_samples and other_eval_counts.get(s, 0) < 3
+)
+st.sidebar.write(f"**Your Evaluations:** {len(evaluated_samples)}")
+st.sidebar.write(f"**Samples Still Needing You:** {remaining}")
 
 if not results_df.empty:
     st.sidebar.download_button(
         label="📥 Download Results (CSV Backup)",
-        data=results_df.to_csv(index=False).encode('utf-8'),
+        data=results_df.to_csv(index=False).encode("utf-8"),
         file_name="evaluation_results_backup.csv",
         mime="text/csv",
-        use_container_width=True
+        use_container_width=True,
     )
 
-sample_options = [f"{item['study_id']} - {item['sample_id']} {'✅' if item['sample_id'] in evaluated_samples else ''}" for item in data]
+# ── Resolve current sample ─────────────────────────────────────────────────────
+current_sample_id = st.session_state.assigned_sample_id
 
-def sync_sidebar():
-    selected = st.session_state.sidebar_selector
-    st.session_state.current_idx = sample_options.index(selected)
+if current_sample_id is None:
+    st.success("🎉 All done! Every sample has been evaluated enough times, or you've evaluated everything available.")
+    st.stop()
 
-st.sidebar.selectbox("Jump to Sample:", options=sample_options, index=st.session_state.current_idx, key="sidebar_selector", on_change=sync_sidebar)
+current_sample = sample_lookup[current_sample_id]
+study_id       = current_sample["study_id"]
+sample_id      = current_sample["sample_id"]
 
-current_sample = data[st.session_state.current_idx]
-study_id = current_sample["study_id"]
-sample_id = current_sample["sample_id"]
-
+# ── Header ─────────────────────────────────────────────────────────────────────
 st.header(f"Evaluating: {sample_id} ({study_id})")
 
-nav_col1, nav_col2, nav_col3 = st.columns([1, 2, 1])
-with nav_col1:
-    if st.button("⬅️ Previous Sample", key="btn_prev", use_container_width=True, disabled=(st.session_state.current_idx == 0)):
-        st.session_state.current_idx -= 1
-        st.rerun()
-with nav_col3:
-    if st.button("Skip / Next Sample ➡️", key="btn_next", use_container_width=True, disabled=(st.session_state.current_idx == len(data) - 1)):
-        st.session_state.current_idx += 1
+# Show how many other evaluations this sample already has (transparency)
+other_count = other_eval_counts.get(sample_id, 0)
+st.caption(f"This sample has been evaluated by {other_count} other reviewer(s) so far.")
+
+_, nav_col_skip = st.columns([3, 1])
+with nav_col_skip:
+    if st.button("Skip Sample ⏭️", use_container_width=True):
+        st.session_state.skipped_ids.add(sample_id)
+        st.session_state.assigned_sample_id = get_next_sample(
+            all_sample_ids, username, results_df, st.session_state.skipped_ids
+        )
         st.rerun()
 
 st.divider()
 
 col1, col2 = st.columns([1, 1.5])
 
+# ── LEFT COLUMN: Scoring form ──────────────────────────────────────────────────
 with col1:
     st.subheader("📝 Algorithm Labels & Scoring")
     label_entries = current_sample.get("label_entries", [])
-    prev_eval = user_results[user_results["sample_id"] == sample_id] if not user_results.empty else pd.DataFrame()
+
+    prev_eval   = user_results[user_results["sample_id"] == sample_id] if not user_results.empty else pd.DataFrame()
     prev_scores = {}
     default_comm = ""
 
@@ -196,6 +282,7 @@ with col1:
 
     with st.form(key=f"form_{sample_id}"):
         current_scores = {}
+
         if label_entries:
             st.markdown("**Evaluate Each Label Category:**")
             for entry in label_entries:
@@ -207,32 +294,38 @@ with col1:
                     idx = acc_options.index(default_val)
                 except ValueError:
                     idx = 0
-                current_scores[cat] = st.selectbox(f"Accuracy for {cat}", options=acc_options, index=idx, key=f"sb_{sample_id}_{cat}", label_visibility="collapsed")
+                current_scores[cat] = st.selectbox(
+                    f"Accuracy for {cat}", options=acc_options, index=idx,
+                    key=f"sb_{sample_id}_{cat}", label_visibility="collapsed"
+                )
                 st.markdown("<hr style='margin: 10px 0;'>", unsafe_allow_html=True)
+
             with st.expander("View Raw JSON Array (including intensities)"):
                 st.json(label_entries)
         else:
             st.info("No labels found for this sample.")
             st.markdown("<hr style='margin: 10px 0;'>", unsafe_allow_html=True)
 
-        comments = st.text_area("General Corrections / Comments:", value=default_comm, height=100)
-        submit_button = st.form_submit_button(label="💾 Save & Go to Next", use_container_width=True)
+        comments      = st.text_area("General Corrections / Comments:", value=default_comm, height=100)
+        submit_button = st.form_submit_button(label="💾 Save & Next", use_container_width=True)
 
         if submit_button:
             unanswered = [cat for cat, score in current_scores.items() if score == "Select..."]
             if unanswered:
                 st.error(f"Please select an accuracy rating for: **{', '.join(unanswered)}**")
             else:
-                save_evaluation(st.session_state.username, study_id, sample_id, current_scores, comments)
-                if st.session_state.current_idx < len(data) - 1:
-                    st.session_state.current_idx += 1
-                else:
-                    st.success("You have reached the end of the dataset!")
+                save_evaluation(username, study_id, sample_id, current_scores, comments)
+                # Clear assignment so the next sample is freshly computed after save
+                st.session_state.assigned_sample_id = None
+                # Remove from skipped if it was there (it's now done)
+                st.session_state.skipped_ids.discard(sample_id)
                 st.rerun()
 
+# ── RIGHT COLUMN: Metadata ─────────────────────────────────────────────────────
 with col2:
     st.subheader("📄 Reference Metadata")
     st.info(f"**Study ID:** `{study_id}` &nbsp; | &nbsp; **Sample ID:** `{sample_id}`")
+
     st.markdown("### 🔬 Sample Characteristics")
     chars = current_sample.get("characteristics", "No characteristics provided.")
     if isinstance(chars, str):
@@ -261,5 +354,6 @@ with col2:
     with st.expander("📚 Study Context (Click to hide full study context)", expanded=True):
         st.text(current_sample.get("study_context", "No study context provided."))
 
+# ── Global results view ────────────────────────────────────────────────────────
 with st.expander("View Global Saved Evaluations (Results CSV)"):
     st.dataframe(load_results())
