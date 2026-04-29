@@ -59,6 +59,7 @@ def load_results():
         with conn.session as s:
             s.execute(text("""
                 CREATE TABLE IF NOT EXISTS evaluations (
+                    id SERIAL PRIMARY KEY,
                     username TEXT, study_id TEXT, sample_id TEXT,
                     label_scores TEXT, comments TEXT,
                     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
