@@ -13,45 +13,145 @@ sys.path.append(module_dir)
 from constants import RNA_USED  # noqa: E402
 
 # ==========================================
-# CONFIGURATION & AUTHENTICATION
+# CONFIGURATION
 # ==========================================
 
 PAYLOAD_FILE = f"./label_evaluation/data/survey_data_{'RNA' if RNA_USED else 'MA'}.json"
 RESULTS_FILE = f"./label_evaluation/data/evaluation_results_{'RNA' if RNA_USED else 'MA'}.csv"
 
-# Barebones Authentication Dictionary
-VALID_USERS = {"researcher1": "pass123", "researcher2": "tulip2026", "alex": "admin"}
-
 st.set_page_config(layout="wide", page_title="Label Evaluation Tool")
 
-# --- Authentication Logic ---
+# ==========================================
+# USER MANAGEMENT (DB-backed, bcrypt)
+# ==========================================
+
+def _ensure_users_table(connection):
+    """Create users table and seed legacy accounts on first run."""
+    import bcrypt
+    with connection.session as s:
+        s.execute(text("""
+            CREATE TABLE IF NOT EXISTS users (
+                username TEXT PRIMARY KEY,
+                password_hash TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """))
+        legacy = {"researcher1": "pass123", "researcher2": "tulip2026", "alex": "admin"}
+        for uname, pwd in legacy.items():
+            existing = s.execute(
+                text("SELECT 1 FROM users WHERE username = :u"), {"u": uname}
+            ).fetchone()
+            if not existing:
+                hashed = bcrypt.hashpw(pwd.encode(), bcrypt.gensalt()).decode()
+                s.execute(
+                    text("INSERT INTO users (username, password_hash) VALUES (:u, :h)"),
+                    {"u": uname, "h": hashed}
+                )
+        s.commit()
+
+
+def _verify_password(connection, username: str, password: str) -> bool:
+    import bcrypt
+    with connection.session as s:
+        row = s.execute(
+            text("SELECT password_hash FROM users WHERE username = :u"), {"u": username}
+        ).fetchone()
+    if row is None:
+        return False
+    return bcrypt.checkpw(password.encode(), row[0].encode())
+
+
+def _register_user(connection, username: str, password: str) -> tuple[bool, str]:
+    """Returns (success, error_message)."""
+    import bcrypt
+    if len(username.strip()) < 3:
+        return False, "Username must be at least 3 characters."
+    if len(password) < 6:
+        return False, "Password must be at least 6 characters."
+    with connection.session as s:
+        existing = s.execute(
+            text("SELECT 1 FROM users WHERE username = :u"), {"u": username}
+        ).fetchone()
+        if existing:
+            return False, f"Username '{username}' is already taken."
+        hashed = bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+        s.execute(
+            text("INSERT INTO users (username, password_hash) VALUES (:u, :h)"),
+            {"u": username, "h": hashed}
+        )
+        s.commit()
+    return True, ""
+
+
+# ==========================================
+# AUTHENTICATION GATE
+# ==========================================
+
 if "authenticated" not in st.session_state:
     st.session_state.authenticated = False
     st.session_state.username = ""
+if "show_register" not in st.session_state:
+    st.session_state.show_register = False
 
 if not st.session_state.authenticated:
+    _conn_early = st.connection("results_db", type="sql")
+    _ensure_users_table(_conn_early)
+
     st.title("🔒 Login Required")
-    st.write("Please log in to access the Label Evaluation Tool.")
 
-    with st.form("login_form"):
-        user_input = st.text_input("Username")
-        pwd_input = st.text_input("Password", type="password")
-        submitted = st.form_submit_button("Login")
+    col_toggle1, col_toggle2 = st.columns([1, 1])
+    with col_toggle1:
+        if st.button("🔑 Login", use_container_width=True,
+                     type="primary" if not st.session_state.show_register else "secondary"):
+            st.session_state.show_register = False
+            st.rerun()
+    with col_toggle2:
+        if st.button("📝 Create Account", use_container_width=True,
+                     type="primary" if st.session_state.show_register else "secondary"):
+            st.session_state.show_register = True
+            st.rerun()
 
-        if submitted:
-            if user_input in VALID_USERS and VALID_USERS[user_input] == pwd_input:
-                st.session_state.authenticated = True
-                st.session_state.username = user_input
-                st.rerun()
-            else:
-                st.error("Invalid username or password. Please try again.")
+    st.divider()
+
+    if not st.session_state.show_register:
+        with st.form("login_form"):
+            user_input = st.text_input("Username")
+            pwd_input  = st.text_input("Password", type="password")
+            submitted  = st.form_submit_button("Login", use_container_width=True)
+            if submitted:
+                if _verify_password(_conn_early, user_input.strip(), pwd_input):
+                    st.session_state.authenticated = True
+                    st.session_state.username = user_input.strip()
+                    st.rerun()
+                else:
+                    st.error("Invalid username or password. Please try again.")
+    else:
+        st.write("Choose a username and password to get started.")
+        with st.form("register_form"):
+            new_user  = st.text_input("Choose a username")
+            new_pwd   = st.text_input("Choose a password", type="password")
+            new_pwd2  = st.text_input("Confirm password",  type="password")
+            submitted = st.form_submit_button("Create Account", use_container_width=True)
+            if submitted:
+                if new_pwd != new_pwd2:
+                    st.error("Passwords do not match.")
+                else:
+                    ok, err = _register_user(_conn_early, new_user.strip(), new_pwd)
+                    if ok:
+                        st.success(f"Account created! You can now log in as **{new_user.strip()}**.")
+                        st.session_state.show_register = False
+                        st.rerun()
+                    else:
+                        st.error(err)
+
     st.stop()
 
 # ==========================================
-# PERSISTENT SAVING SOLUTIONS (SQL)
+# PERSISTENT SAVING (SQL)
 # ==========================================
 
 conn = st.connection("results_db", type="sql")
+
 
 def load_results():
     """Loads results from SQL database, falling back to CSV if DB is empty."""
@@ -116,22 +216,19 @@ def get_next_sample(all_sample_ids: list[str], username: str, results_df: pd.Dat
       - Priority 1: samples with exactly 2 evaluations by OTHER users
       - Priority 2: samples with exactly 1 evaluation by OTHER users
       - Priority 3: samples with 0 evaluations by anyone
-    
+
     Hard constraints:
       - The current user must never see a sample they have already evaluated.
-      - skip_ids: samples the user has explicitly skipped this session (excluded for now,
-        but will be reconsidered once higher-priority work runs out).
+      - skip_ids: samples skipped this session — deferred, not permanently excluded.
     """
     if skip_ids is None:
         skip_ids = set()
 
-    # Samples this user has already evaluated — permanently excluded
     if not results_df.empty:
         user_done = set(results_df[results_df["username"] == username]["sample_id"].tolist())
     else:
         user_done = set()
 
-    # Count evaluations per sample by OTHER users only
     if not results_df.empty:
         other_evals = results_df[results_df["username"] != username]
         eval_counts = other_evals.groupby("sample_id").size().to_dict()
@@ -139,15 +236,13 @@ def get_next_sample(all_sample_ids: list[str], username: str, results_df: pd.Dat
         eval_counts = {}
 
     def pick_from(candidates):
-        """Randomly pick from candidates, preferring non-skipped. Falls back to skipped if nothing else."""
+        """Randomly pick, preferring non-skipped. Falls back to skipped if nothing else."""
         non_skipped = [s for s in candidates if s not in skip_ids]
         skipped     = [s for s in candidates if s in skip_ids]
         pool = non_skipped if non_skipped else skipped
         return random.choice(pool) if pool else None
 
-    # Build candidate pools (excluding samples user already evaluated)
-    eligible = [s for s in all_sample_ids if s not in user_done]
-
+    eligible   = [s for s in all_sample_ids if s not in user_done]
     priority_2 = [s for s in eligible if eval_counts.get(s, 0) == 2]
     priority_1 = [s for s in eligible if eval_counts.get(s, 0) == 1]
     priority_0 = [s for s in eligible if eval_counts.get(s, 0) == 0]
@@ -181,19 +276,17 @@ if not data:
 all_sample_ids = [item["sample_id"] for item in data]
 sample_lookup  = {item["sample_id"]: item for item in data}
 
-results_df = load_results()
-username   = st.session_state.username
-
-user_results     = results_df[results_df["username"] == username] if not results_df.empty else pd.DataFrame()
+results_df        = load_results()
+username          = st.session_state.username
+user_results      = results_df[results_df["username"] == username] if not results_df.empty else pd.DataFrame()
 evaluated_samples = user_results["sample_id"].unique().tolist() if not user_results.empty else []
 
-# --- Session state: track current assignment and skipped samples ---
+# Session state for assignment and skips
 if "assigned_sample_id" not in st.session_state:
     st.session_state.assigned_sample_id = None
 if "skipped_ids" not in st.session_state:
     st.session_state.skipped_ids = set()
 
-# Assign a sample if we don't have one yet (or the previous one was just saved/skipped)
 if st.session_state.assigned_sample_id is None:
     st.session_state.assigned_sample_id = get_next_sample(
         all_sample_ids, username, results_df, st.session_state.skipped_ids
@@ -202,16 +295,15 @@ if st.session_state.assigned_sample_id is None:
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 st.sidebar.header(f"👤 User: {username}")
 if st.sidebar.button("Logout"):
-    st.session_state.authenticated    = False
-    st.session_state.username         = ""
-    st.session_state.assigned_sample_id = None
-    st.session_state.skipped_ids      = set()
+    st.session_state.authenticated       = False
+    st.session_state.username            = ""
+    st.session_state.assigned_sample_id  = None
+    st.session_state.skipped_ids         = set()
+    st.session_state.show_register       = False
     st.rerun()
 
 st.sidebar.divider()
 
-# Progress: count samples where this user has NOT yet evaluated AND there are
-# still < 3 other-user evaluations (i.e. work remaining for this user)
 if not results_df.empty:
     other_eval_counts = results_df[results_df["username"] != username].groupby("sample_id").size().to_dict()
 else:
@@ -247,7 +339,6 @@ sample_id      = current_sample["sample_id"]
 # ── Header ─────────────────────────────────────────────────────────────────────
 st.header(f"Evaluating: {sample_id} ({study_id})")
 
-# Show how many other evaluations this sample already has (transparency)
 other_count = other_eval_counts.get(sample_id, 0)
 st.caption(f"This sample has been evaluated by {other_count} other reviewer(s) so far.")
 
@@ -269,8 +360,8 @@ with col1:
     st.subheader("📝 Algorithm Labels & Scoring")
     label_entries = current_sample.get("label_entries", [])
 
-    prev_eval   = user_results[user_results["sample_id"] == sample_id] if not user_results.empty else pd.DataFrame()
-    prev_scores = {}
+    prev_eval    = user_results[user_results["sample_id"] == sample_id] if not user_results.empty else pd.DataFrame()
+    prev_scores  = {}
     default_comm = ""
 
     if not prev_eval.empty:
@@ -317,9 +408,7 @@ with col1:
                 st.error(f"Please select an accuracy rating for: **{', '.join(unanswered)}**")
             else:
                 save_evaluation(username, study_id, sample_id, current_scores, comments)
-                # Clear assignment so the next sample is freshly computed after save
                 st.session_state.assigned_sample_id = None
-                # Remove from skipped if it was there (it's now done)
                 st.session_state.skipped_ids.discard(sample_id)
                 st.rerun()
 
