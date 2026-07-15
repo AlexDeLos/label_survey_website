@@ -10,14 +10,16 @@ from sqlalchemy import text
 module_dir = "./"
 sys.path.append(module_dir)
 
-from constants import RNA_USED  # noqa: E402
-
 # ==========================================
 # CONFIGURATION
 # ==========================================
 
-PAYLOAD_FILE = f"./label_evaluation/data/survey_data_{'RNA' if RNA_USED else 'MA'}.json"
-RESULTS_FILE = f"./label_evaluation/data/evaluation_results_{'RNA' if RNA_USED else 'MA'}.csv"
+# Define both payload paths
+PAYLOAD_FILE_RNA = "./label_evaluation/data/survey_data_RNA.json"
+PAYLOAD_FILE_MA = "./label_evaluation/data/survey_data_MA.json"
+
+# Unified results file for the combined evaluation
+RESULTS_FILE = "./label_evaluation/data/evaluation_results_combined.csv"
 
 st.set_page_config(layout="wide", page_title="Label Evaluation Tool")
 
@@ -109,11 +111,11 @@ if not st.session_state.authenticated:
             
             ## How does this help CropXR?
             By evaluating these labels you help provide information on the accuracy of the labels in a  large Arabidopsis thaliana compendium. This compendium, together with the labels will allow researchers from our group \
-            to have a large set of gene expression samples that they can easily filter and group by biological characteristics
+            to have a large set of gene expression samples that they can easily filter and group by biological characteristics. We expect this to provide a knowledge base that can give our experimental results a broader biological context.
 
             ## Your Role
             - **Quality Control:** Your manual verification provides the ground-truth dataset we need to catch subtle algorithmic blind spots.
-            - **Downstream results validation:** Your input gives a measure of the accuracy of our labeling system. These scores are used later to estimate the accuracy of the labels and help interpret results from tasks such as GSEA, Differential expression, or cluster analisys.           
+            - **Downstream results validation:** Your input gives a measure of the accuracy of our labeling system. These scores are used later to estimate the accuracy of the labels and help interpret results from tasks such as GSEA, Differential expression, or cluster analisys.            
             *If you spot consistent systematic errors across multiple samples, please drop a note in the comments field.*
             
             ## What to do?
@@ -233,16 +235,6 @@ def save_evaluation(username, study_id, sample_id, label_scores, comments):
 # ==========================================
 
 def get_next_sample(all_sample_ids: list[str], username: str, results_df: pd.DataFrame, skip_ids: set[str] = None) -> str | None:
-    """
-    Returns the next sample_id this user should evaluate, based on:
-      - Priority 1: samples with exactly 2 evaluations by OTHER users
-      - Priority 2: samples with exactly 1 evaluation by OTHER users
-      - Priority 3: samples with 0 evaluations by anyone
-
-    Hard constraints:
-      - The current user must never see a sample they have already evaluated.
-      - skip_ids: samples skipped this session — deferred, not permanently excluded.
-    """
     if skip_ids is None:
         skip_ids = set()
 
@@ -258,7 +250,6 @@ def get_next_sample(all_sample_ids: list[str], username: str, results_df: pd.Dat
         eval_counts = {}
 
     def pick_from(candidates):
-        """Randomly pick, preferring non-skipped. Falls back to skipped if nothing else."""
         non_skipped = [s for s in candidates if s not in skip_ids]
         skipped     = [s for s in candidates if s in skip_ids]
         pool = non_skipped if non_skipped else skipped
@@ -282,17 +273,30 @@ def get_next_sample(all_sample_ids: list[str], username: str, results_df: pd.Dat
 
 @st.cache_data
 def load_survey_data():
-    if not os.path.exists(PAYLOAD_FILE):
-        return []
-    with open(PAYLOAD_FILE, encoding="utf-8") as f:
-        return json.load(f)
-
-
-# st.title("🧬 Sample Label Evaluator")
+    """Loads and combines RNA and MA sample sets, tagging their source."""
+    combined_data = []
+    
+    # Load RNA samples
+    if os.path.exists(PAYLOAD_FILE_RNA):
+        with open(PAYLOAD_FILE_RNA, encoding="utf-8") as f:
+            rna_data = json.load(f)
+            for item in rna_data:
+                item["source_type"] = "RNA"  # Tag origin
+            combined_data.extend(rna_data)
+            
+    # Load Microarray samples
+    if os.path.exists(PAYLOAD_FILE_MA):
+        with open(PAYLOAD_FILE_MA, encoding="utf-8") as f:
+            ma_data = json.load(f)
+            for item in ma_data:
+                item["source_type"] = "MA"  # Tag origin
+            combined_data.extend(ma_data)
+            
+    return combined_data
 
 data = load_survey_data()
 if not data:
-    st.error(f"Could not find '{PAYLOAD_FILE}'. Please ensure the file exists.")
+    st.error(f"Could not find any survey data files in './label_evaluation/data/'. Please ensure files exist.")
     st.stop()
 
 all_sample_ids = [item["sample_id"] for item in data]
@@ -342,7 +346,7 @@ if not results_df.empty:
     st.sidebar.download_button(
         label="📥 Download Results (CSV Backup)",
         data=results_df.to_csv(index=False).encode("utf-8"),
-        file_name="evaluation_results_backup.csv",
+        file_name="evaluation_results_combined_backup.csv",
         mime="text/csv",
         use_container_width=True,
     )
@@ -371,6 +375,7 @@ if not results_df.empty:
     )
 else:
     st.sidebar.info("No evaluations yet. Be the first!")
+
 # ── Resolve current sample ─────────────────────────────────────────────────────
 current_sample_id = st.session_state.assigned_sample_id
 
@@ -383,9 +388,6 @@ study_id       = current_sample["study_id"]
 sample_id      = current_sample["sample_id"]
 
 # ── Header ─────────────────────────────────────────────────────────────────────
-# st.header(f"Evaluating: {sample_id} ({study_id})")
-
-# st.divider()
 
 col1, col2 = st.columns([1, 2])
 
@@ -497,14 +499,23 @@ with col1:
         st.session_state.assigned_sample_id = None
         st.session_state.skipped_ids.discard(sample_id)
         st.rerun()
+
+# ── RIGHT COLUMN: Metadata ─────────────────────────────────────────────────────
+with col2:
     st.subheader("📄 Reference Metadata")
     
     # Modernized layout using small metrics/columns or clean inline layout
     st.info(f"🧬 **Study ID:** `{study_id}` &nbsp;&nbsp;|&nbsp;&nbsp; 🆔 **Sample ID:** `{sample_id}`")
-# ── RIGHT COLUMN: Metadata ─────────────────────────────────────────────────────
-with col2:
 
-    st.markdown("### 🔬 Sample Characteristics")
+    # Dynamic Header based on Source
+    source = current_sample.get("source_type", "Unknown")
+    if source == "RNA":
+        st.markdown("### 🔬 RNA-seq Sample Characteristics")
+    elif source == "MA":
+        st.markdown("### 🔬 Microarray Sample Characteristics")
+    else:
+        st.markdown("### 🔬 Sample Characteristics")
+        
     chars = current_sample.get("characteristics", "No characteristics provided.")
     
     # Helper to parse and highlight sub-keys (e.g., "tissue: leaf" -> "**tissue**: leaf")
