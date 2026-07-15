@@ -104,23 +104,26 @@ if not st.session_state.authenticated:
     with st.expander("ℹ️ About This Project & Why It Matters", expanded=True):
         st.markdown(
             """
-            # Thank you for your participation
-            ## The Big Picture
+            ### 🙏 Thank you for your participation
+            #### 🌍 The Big Picture
             Our automated pipeline processes thousands of biomedical samples daily, attempting to extract 
             key categorical metadata (like tissue type, treatment, or developmental stage). 
             
-            ## How does this help CropXR?
+            #### 🌱 How does this help CropXR?
             By evaluating these labels you help provide information on the accuracy of the labels in a  large Arabidopsis thaliana compendium. This compendium, together with the labels will allow researchers from our group \
             to have a large set of gene expression samples that they can easily filter and group by biological characteristics. We expect this to provide a knowledge base that can give our experimental results a broader biological context.
 
-            ## Your Role
+            #### 🎯 Your Role
             - **Quality Control:** Your manual verification provides the ground-truth dataset we need to catch subtle algorithmic blind spots.
             - **Downstream results validation:** Your input gives a measure of the accuracy of our labeling system. These scores are used later to estimate the accuracy of the labels and help interpret results from tasks such as GSEA, Differential expression, or cluster analisys.            
             *If you spot consistent systematic errors across multiple samples, please drop a note in the comments field.*
             
-            ## What to do?
+            #### 📝 What to do?
             - If this is your first time here create an account with a user name as password.
             - After that or if you have an account; Login and evaluate labels for samples.
+
+            ### 🏆 Keep an eye on the leaderboard
+            If by the end of the survey you have been the MVP (Most Valued Participant) you can get a prize (TO BE DETERMINED)
             """
         )
     col_toggle1, col_toggle2 = st.columns([1, 1])
