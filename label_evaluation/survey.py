@@ -98,7 +98,29 @@ if not st.session_state.authenticated:
     _ensure_users_table(_conn_early)
 
     st.title("🔒 Login Required")
+    
+    with st.expander("ℹ️ About This Project & Why It Matters", expanded=True):
+        st.markdown(
+            """
+            # Thank you for your participation
+            ## The Big Picture
+            Our automated pipeline processes thousands of biomedical samples daily, attempting to extract 
+            key categorical metadata (like tissue type, treatment, or developmental stage). 
+            
+            ## How does this help CropXR?
+            By evaluating these labels you help provide information on the accuracy of the labels in a  large Arabidopsis thaliana compendium. This compendium, together with the labels will allow researchers from our group \
+            to have a large set of gene expression samples that they can easily filter and group by biological characteristics
 
+            ## Your Role
+            - **Quality Control:** Your manual verification provides the ground-truth dataset we need to catch subtle algorithmic blind spots.
+            - **Downstream results validation:** Your input gives a measure of the accuracy of our labeling system. These scores are used later to estimate the accuracy of the labels and help interpret results from tasks such as GSEA, Differential expression, or cluster analisys.           
+            *If you spot consistent systematic errors across multiple samples, please drop a note in the comments field.*
+            
+            ## What to do?
+            - If this is your first time here create an account with a user name as password.
+            - After that or if you have an account; Login and evaluate labels for samples.
+            """
+        )
     col_toggle1, col_toggle2 = st.columns([1, 1])
     with col_toggle1:
         if st.button("🔑 Login", use_container_width=True,
@@ -266,7 +288,7 @@ def load_survey_data():
         return json.load(f)
 
 
-st.title("🧬 Sample Label Evaluator")
+# st.title("🧬 Sample Label Evaluator")
 
 data = load_survey_data()
 if not data:
@@ -324,7 +346,31 @@ if not results_df.empty:
         mime="text/csv",
         use_container_width=True,
     )
+st.sidebar.divider()
+st.sidebar.subheader("🏆 Leaderboard")
 
+if not results_df.empty:
+    # Count how many evaluations each user has done
+    leaderboard_df = results_df["username"].value_counts().reset_index()
+    leaderboard_df.columns = ["Researcher", "Evaluations"]
+    
+    # Optional: Highlight the current user with a medal or icon
+    def format_researcher(row):
+        name = row["Researcher"]
+        if name == username:
+            return f"{name} (You)"
+        return name
+        
+    leaderboard_df["Researcher"] = leaderboard_df.apply(format_researcher, axis=1)
+    
+    # Display as a clean, index-less table in the sidebar
+    st.sidebar.dataframe(
+        leaderboard_df, 
+        hide_index=True, 
+        use_container_width=True
+    )
+else:
+    st.sidebar.info("No evaluations yet. Be the first!")
 # ── Resolve current sample ─────────────────────────────────────────────────────
 current_sample_id = st.session_state.assigned_sample_id
 
@@ -337,23 +383,11 @@ study_id       = current_sample["study_id"]
 sample_id      = current_sample["sample_id"]
 
 # ── Header ─────────────────────────────────────────────────────────────────────
-st.header(f"Evaluating: {sample_id} ({study_id})")
+# st.header(f"Evaluating: {sample_id} ({study_id})")
 
-other_count = other_eval_counts.get(sample_id, 0)
-st.caption(f"This sample has been evaluated by {other_count} other reviewer(s) so far.")
+# st.divider()
 
-_, nav_col_skip = st.columns([3, 1])
-with nav_col_skip:
-    if st.button("Skip Sample ⏭️", use_container_width=True):
-        st.session_state.skipped_ids.add(sample_id)
-        st.session_state.assigned_sample_id = get_next_sample(
-            all_sample_ids, username, results_df, st.session_state.skipped_ids
-        )
-        st.rerun()
-
-st.divider()
-
-col1, col2 = st.columns([1, 1.5])
+col1, col2 = st.columns([1, 2])
 
 # ── LEFT COLUMN: Scoring form ──────────────────────────────────────────────────
 with col1:
@@ -371,79 +405,157 @@ with col1:
         if default_comm == "nan":
             default_comm = ""
 
-    acc_options = ["Select...", "Correct", "Mostly Correct", "Incorrect"]
+    # Inject a clean snippet of CSS to explicitly paint the active button green
+    st.markdown("""
+        <style>
+        /* Automatically styles the "Everything is Correct" button green when active */
+        div[data-testid="stButton"] button:has(div p:contains("Everything is Correct")):not(:disabled) {
+            background-color: #2e7d32 !important;
+            color: white !important;
+            border-color: #1b5e20 !important;
+        }
+        </style>
+    """, unsafe_allow_html=True)
 
-    with st.form(key=f"form_{sample_id}"):
-        current_scores = {}
+    current_scores = {}
 
-        if label_entries:
-            st.markdown("**Evaluate Each Label Category:**")
-            for entry in label_entries:
-                cat = entry.get("label_category", "unknown")
-                val = entry.get("display_value", "unknown")
-                st.markdown(f"🔹 **{cat.capitalize()}**: `{val}`")
-                default_val = prev_scores.get(cat, "Select...")
-                try:
-                    idx = acc_options.index(default_val)
-                except ValueError:
-                    idx = 0
-                current_scores[cat] = st.selectbox(
-                    f"Accuracy for {cat}", options=acc_options, index=idx,
-                    key=f"sb_{sample_id}_{cat}", label_visibility="collapsed"
+    if label_entries:
+        st.markdown("**Evaluate Individual Categories:**")
+        core_options = ["Correct", "Mostly Correct", "Incorrect"]
+        
+        for entry in label_entries:
+            cat = entry.get("label_category", "unknown")
+            val = entry.get("display_value", "unknown")
+            
+            # Smart default initialization
+            default_val = prev_scores.get(cat, "Correct")
+            try:
+                idx = core_options.index(default_val)
+            except ValueError:
+                idx = 0
+                    
+            col_text, col_boxes = st.columns([1, 2])
+            
+            with col_text:
+                st.markdown(f"<div style='padding-top: 10px;'>🔹 <b>{cat.capitalize()}</b>:<br><code>{val}</code></div>", unsafe_allow_html=True)
+                
+            with col_boxes:
+                # Placed outside a form so changes register instantaneously
+                current_scores[cat] = st.radio(
+                    f"Accuracy for {cat}", 
+                    options=core_options, 
+                    index=idx,
+                    horizontal=True,
+                    key=f"rb_{sample_id}_{cat}",
+                    label_visibility="collapsed"
                 )
-                st.markdown("<hr style='margin: 10px 0;'>", unsafe_allow_html=True)
+            
+            st.markdown("<hr style='margin: 5px 0 15px 0; border: 0.5px solid #e6e6e6;'>", unsafe_allow_html=True)
 
-            with st.expander("View Raw JSON Array (including intensities)"):
-                st.json(label_entries)
-        else:
-            st.info("No labels found for this sample.")
-            st.markdown("<hr style='margin: 10px 0;'>", unsafe_allow_html=True)
+        with st.expander("View Raw JSON Array (including intensities)"):
+            st.json(label_entries)
+    else:
+        st.info("No labels found for this sample.")
+        st.markdown("<hr style='margin: 10px 0;'>", unsafe_allow_html=True)
 
-        comments      = st.text_area("General Corrections / Comments:", value=default_comm, height=100)
-        submit_button = st.form_submit_button(label="💾 Save & Next", use_container_width=True)
+    # Added a unique template key so typed comments persist safely across layout refreshes
+    comments = st.text_area("General Corrections / Comments:", value=default_comm, height=100, key=f"comm_{sample_id}")
+    
+    # Calculate if every row is clean
+    all_correct = all(score == "Correct" for score in current_scores.values()) if current_scores else False
 
-        if submit_button:
-            unanswered = [cat for cat, score in current_scores.items() if score == "Select..."]
-            if unanswered:
-                st.error(f"Please select an accuracy rating for: **{', '.join(unanswered)}**")
-            else:
-                save_evaluation(username, study_id, sample_id, current_scores, comments)
-                st.session_state.assigned_sample_id = None
-                st.session_state.skipped_ids.discard(sample_id)
-                st.rerun()
+    st.markdown("<br>", unsafe_allow_html=True)
+    btn_col1, btn_col2 = st.columns(2)
+    
+    with btn_col1:
+        # Green button when active, automatically greys out when any selection changes
+        all_correct_button = st.button(
+            "✅ Everything is Correct",
+            key=f"btn_correct_{sample_id}",
+            disabled=not all_correct,
+            use_container_width=True,
+            type="primary" if all_correct else "secondary"
+        )
+        
+    with btn_col2:
+        # Standard highlighted submit button when changes or adjustments are active
+        submit_button = st.button(
+            "💾 Submit Sample",
+            key=f"btn_submit_{sample_id}",
+            disabled=all_correct,
+            use_container_width=True,
+            type="primary" if not all_correct else "secondary"
+        )
 
+    # Submission routing engine
+    if all_correct_button or submit_button:
+        if all_correct_button:
+            for cat in current_scores:
+                current_scores[cat] = "Correct"
+
+        save_evaluation(username, study_id, sample_id, current_scores, comments)
+        st.session_state.assigned_sample_id = None
+        st.session_state.skipped_ids.discard(sample_id)
+        st.rerun()
+    st.subheader("📄 Reference Metadata")
+    
+    # Modernized layout using small metrics/columns or clean inline layout
+    st.info(f"🧬 **Study ID:** `{study_id}` &nbsp;&nbsp;|&nbsp;&nbsp; 🆔 **Sample ID:** `{sample_id}`")
 # ── RIGHT COLUMN: Metadata ─────────────────────────────────────────────────────
 with col2:
-    st.subheader("📄 Reference Metadata")
-    st.info(f"**Study ID:** `{study_id}` &nbsp; | &nbsp; **Sample ID:** `{sample_id}`")
 
     st.markdown("### 🔬 Sample Characteristics")
     chars = current_sample.get("characteristics", "No characteristics provided.")
-    if isinstance(chars, str):
-        char_lines = chars.split("\n")
-        st.success("\n".join([f"- {c}" for c in char_lines if c.strip()]))
-    elif isinstance(chars, list):
-        st.success("\n".join([f"- {c}" for c in chars]))
-    else:
-        st.success(chars)
+    
+    # Helper to parse and highlight sub-keys (e.g., "tissue: leaf" -> "**tissue**: leaf")
+    def format_char_line(line: str) -> str:
+        if ":" in line:
+            key_part, val_part = line.split(":", 1)
+            # Highlights the sub-key in green and bolds it
+            return f"- :green[**{key_part.strip()}**]: {val_part.strip()}"
+        return f"- {line.strip()}"
 
+    # Generate processed lines
+    processed_chars = []
+    if isinstance(chars, str):
+        processed_chars = [format_char_line(c) for c in chars.split("\n") if c.strip()]
+    elif isinstance(chars, list):
+        processed_chars = [format_char_line(c) for c in chars if str(c).strip()]
+    
+    if processed_chars:
+        st.success("\n".join(processed_chars))
+    else:
+        st.success(str(chars))
+
+    # Full Sample Metadata Section
     full_sample_meta = current_sample.get("full_sample_metadata", {})
     if full_sample_meta:
-        with st.expander("🔍 View Full Sample Metadata"):
+        with st.expander("🔍 View Full Sample Metadata", expanded=True):
             for key, val in full_sample_meta.items():
                 if "characteristics" in key:
                     continue
-                if isinstance(val, list) and len(val) == 1:
-                    clean_val = val[0]
-                elif isinstance(val, list):
-                    clean_val = ", ".join([str(v) for v in val])
+                
+                # Clean up array values safely
+                if isinstance(val, list):
+                    clean_val = ", ".join([str(v) for v in val]) if len(val) > 1 else str(val[0]) if val else ""
                 else:
-                    clean_val = val
-                st.markdown(f"**{key}**: {clean_val}")
+                    clean_val = str(val)
+                
+                # Make raw keys readable (e.g., "geo_accession" -> "Geo Accession")
+                display_key = key.replace("_", " ").title()
+                
+                # Style the key using a distinct blue color block prefix
+                st.markdown(f"🏷️ :blue[**{display_key}**]  \n&nbsp;&nbsp;&nbsp;&nbsp;{clean_val}")
 
     st.markdown("<br>", unsafe_allow_html=True)
     with st.expander("📚 Study Context (Click to hide full study context)", expanded=True):
-        st.text(current_sample.get("study_context", "No study context provided."))
+        # Using markdown block instead of raw text so it wraps beautifully and looks less harsh
+        st.markdown(
+            f"<div style='background-color: rgba(0,0,0,0.03); padding: 10px; border-radius: 5px; font-size: 14px;'>"
+            f"{current_sample.get('study_context', 'No study context provided.')}"
+            f"</div>", 
+            unsafe_allow_html=True
+        )
 
 # ── Global results view ────────────────────────────────────────────────────────
 with st.expander("View Global Saved Evaluations (Results CSV)"):
