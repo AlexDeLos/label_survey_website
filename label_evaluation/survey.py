@@ -403,7 +403,11 @@ col1, col2 = st.columns([1, 2])
 # ── LEFT COLUMN: Scoring form ──────────────────────────────────────────────────
 with col1:
     st.subheader("📝 Algorithm Labels & Scoring")
-    label_entries = current_sample.get("label_entries", [])
+    # TULIP's "unspecified_notes" are model notes, not labels: hide them from reviewers (kept in the data)
+    label_entries = [
+        e for e in current_sample.get("label_entries", [])
+        if not str(e.get("label_category", "")).startswith("unspecified_notes")
+    ]
 
     prev_eval    = user_results[user_results["sample_id"] == sample_id] if not user_results.empty else pd.DataFrame()
     prev_scores  = {}
