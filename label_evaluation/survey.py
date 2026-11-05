@@ -443,7 +443,10 @@ with col1:
         for entry in label_entries:
             cat = entry.get("label_category", "unknown")
             val = entry.get("display_value", "unknown")
-            
+            # Show reviewers "no stress applied" instead of the raw "Control" treatment value
+            if cat.startswith("treatment") and str(val).strip().lower() == "control":
+                val = "no stress applied"
+
             # Smart default initialization
             default_val = prev_scores.get(cat, "Correct")
             try:
