@@ -181,7 +181,7 @@ conn = st.connection("results_db", type="sql")
 
 
 def load_results():
-    """Loads results from SQL database, falling back to CSV if DB is empty."""
+    """Loads results from the SQL database (the only source of truth; the CSV is a write-only backup)."""
     try:
         with conn.session as s:
             s.execute(text("""
@@ -195,12 +195,6 @@ def load_results():
             s.commit()
 
         df = conn.query("SELECT * FROM evaluations", ttl=0)
-
-        if (df is None or df.empty) and os.path.exists(RESULTS_FILE):
-            df = pd.read_csv(RESULTS_FILE)
-            if "username" not in df.columns:
-                df["username"] = "unknown_legacy_user"
-            return df
 
         return df if df is not None else pd.DataFrame(
             columns=["username", "study_id", "sample_id", "label_scores", "comments"]
