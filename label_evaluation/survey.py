@@ -303,6 +303,17 @@ if not data:
     st.stop()
 
 all_sample_ids = [item["sample_id"] for item in data]
+
+
+def _render_version_footer():
+    """Tiny footer listing the label versions actually present in the loaded survey data."""
+    versions = sorted({item.get("label_version", "unknown") for item in data})
+    st.markdown(
+        f"<div style='text-align:right; font-size:10px; opacity:0.4; margin-top:2em;'>"
+        f"labels: {', '.join(versions)}</div>",
+        unsafe_allow_html=True,
+    )
+
 sample_lookup  = {item["sample_id"]: item for item in data}
 
 results_df        = load_results()
@@ -384,6 +395,7 @@ current_sample_id = st.session_state.assigned_sample_id
 
 if current_sample_id is None:
     st.success("🎉 All done! Every sample has been evaluated enough times, or you've evaluated everything available.")
+    _render_version_footer()
     st.stop()
 
 current_sample = sample_lookup[current_sample_id]
@@ -574,3 +586,5 @@ with col2:
 # ── Global results view ────────────────────────────────────────────────────────
 with st.expander("View Global Saved Evaluations (Results CSV)"):
     st.dataframe(load_results())
+
+_render_version_footer()

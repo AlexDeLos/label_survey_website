@@ -10,38 +10,63 @@ they do not need access to your file system or any other data.
 
 Usage
 -----
-    python 1_prepare_survey_data.py
+    python label_evaluation/1_prepare_survey_data.py [--rna] [--storage-dir PATH]
+
+Run from the repository root (it imports constants.py from there).
+Or run it in apptainer with label_evaluation/apptainer/prepare_survey_data.sh.
 
 Output
 ------
-    src/label_evaluation/data/survey_data.json
-
-Adjust the paths in the CONFIGURATION block below before running.
+    label_evaluation/data/survey_data_MA.json   (or survey_data_RNA.json with --rna)
 """
 
+import argparse
 import glob
 import json
 import os
 import random
 import sys
+
 module_dir = "./"
 sys.path.append(module_dir)
 
-from constants import RNA_USED  # noqa: E402
+from constants import RNA_USED
+
 # ══════════════════════════════════════════════════════════════════
 #  CONFIGURATION  — edit these paths before running
 # ══════════════════════════════════════════════════════════════════
 
-# Folder containing your per-study label JSON files (e.g. GSE30720.json)
-if RNA_USED:
-    LABELS_DIR = "./new_storage/labels/TULIP_1.2_RNA/5.0"
-else:
-    LABELS_DIR = "./new_storage/labels/TULIP_1.2/5.0"
+# Root of the Dataset_fusion_Microarray storage. Resolution order:
+#   1. --storage-dir <path> on the command line
+#   2. $GENE_STORAGE_DIR environment variable (set by the apptainer job)
+#   3. the cluster storage, if it is mounted
+#   4. the local Dataset_fusion_Microarray checkout
+_CLUSTER_STORAGE = "/tudelft.net/staff-umbrella/GeneExpressionStorage/"
+_LOCAL_STORAGE = "/home/alex/Documents/GitHub/Dataset_fusion_Microarray/new_storage/"
 
+_parser = argparse.ArgumentParser(add_help=False)
+_parser.add_argument("--storage-dir", default=None)
+_args, _ = _parser.parse_known_args()
+STORAGE_DIR = (
+    _args.storage_dir
+    or os.environ.get("GENE_STORAGE_DIR")
+    or (_CLUSTER_STORAGE if os.path.isdir(_CLUSTER_STORAGE) else _LOCAL_STORAGE)
+)
+
+# Labels to evaluate: TULIP 2.0.0, experiment 7.0 (matches Dataset_fusion_Microarray/src/constants.py)
+LABEL_MODEL = "TULIP_2.0.0"
+LABEL_EXPERIMENT = "7.0"
+
+# Folder containing your per-study label JSON files (e.g. GSE30720.json)
+LABELS_DIR = os.path.join(
+    STORAGE_DIR, "labels", f"{LABEL_MODEL}{'_RNA' if RNA_USED else ''}", LABEL_EXPERIMENT
+)
+
+# Folder containing one sub-folder of per-sample metadata JSONs per study
 if RNA_USED:
-    METADATA_BASE_DIR = "./new_storage/rnaseq_data/metadata"
+    METADATA_BASE_DIR = os.path.join(STORAGE_DIR, "rnaseq_data", "metadata")
 else:
-    METADATA_BASE_DIR = "./new_storage/processed_microarray_data/"
+    METADATA_BASE_DIR = os.path.join(STORAGE_DIR, "processed_microarray_data")
 
 # Where to write the packaged survey file
 OUTPUT_PAYLOAD = f"label_evaluation/data/survey_data_{'RNA' if RNA_USED else 'MA'}.json"
@@ -163,6 +188,10 @@ def main():
     # Filter out the aggregated file
     label_files = [f for f in label_files if os.path.basename(f).replace(".json", "") != "tulip_condensed_labels"]
 
+    print(f"Labels:   {LABELS_DIR}")
+    print(f"Metadata: {METADATA_BASE_DIR}")
+    if not os.path.isdir(LABELS_DIR):
+        sys.exit(f"Labels folder not found: {LABELS_DIR}")
     print(f"Found {len(label_files)} study label files.")
     print(f"Selecting up to {SAMPLES_PER_STUDY} random samples per study...\n")
 
@@ -249,6 +278,7 @@ def main():
 
             survey_payload.append(
                 {
+                    "label_version": f"{LABEL_MODEL}/{LABEL_EXPERIMENT}",
                     "study_id": study_id,
                     "sample_id": sample_id,
                     "characteristics": characteristics,
