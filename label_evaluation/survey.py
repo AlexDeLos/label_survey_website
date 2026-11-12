@@ -5,6 +5,7 @@ import random
 import pandas as pd
 import streamlit as st
 import sys
+import time
 from sqlalchemy import text
 
 module_dir = "./"
@@ -511,7 +512,36 @@ with col1:
             for cat in current_scores:
                 current_scores[cat] = "Correct"
 
+        # Full-screen loading overlay: confirms the click and blocks double-submits. It stays
+        # visible through the rerun until Streamlit redraws this slot with the next sample.
+        st.markdown("""
+            <style>
+            .next-sample-overlay {
+                position: fixed; inset: 0; z-index: 999999;
+                display: flex; flex-direction: column; align-items: center; justify-content: center;
+                background: rgba(255, 255, 255, 0.85); backdrop-filter: blur(2px);
+                font-size: 1.2rem; font-weight: 600; color: #1b5e20;
+            }
+            @media (prefers-color-scheme: dark) {
+                .next-sample-overlay { background: rgba(14, 17, 23, 0.85); color: #81c784; }
+            }
+            .next-sample-spinner {
+                width: 56px; height: 56px; margin-bottom: 18px; border-radius: 50%;
+                border: 6px solid rgba(46, 125, 50, 0.2); border-top-color: #2e7d32;
+                animation: next-sample-spin 0.8s linear infinite;
+            }
+            @keyframes next-sample-spin { to { transform: rotate(360deg); } }
+            </style>
+            <div class="next-sample-overlay">
+                <div class="next-sample-spinner"></div>
+                <div>💾 Evaluation saved — fetching the next sample…</div>
+            </div>
+        """, unsafe_allow_html=True)
+
+        _t0 = time.monotonic()
         save_evaluation(username, study_id, sample_id, current_scores, comments)
+        # Keep the overlay up briefly even when saving is instant, so users notice it
+        time.sleep(max(0.0, 0.8 - (time.monotonic() - _t0)))
         st.session_state.assigned_sample_id = None
         st.session_state.skipped_ids.discard(sample_id)
         st.rerun()
