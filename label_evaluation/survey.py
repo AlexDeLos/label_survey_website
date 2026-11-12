@@ -26,7 +26,7 @@ PAYLOAD_FILE_MA = "./label_evaluation/data/survey_data_MA.json"
 # Unified results file for the combined evaluation
 RESULTS_FILE = "./label_evaluation/data/evaluation_results_combined.csv"
 
-APP_VERSION = "0.1.0"   # survey app version, shown in the footer next to the label version
+APP_VERSION = "0.1.1"   # survey app version, shown in the footer next to the label version
 
 # Motivation features
 TEAM_GOALS = [500, 1000]                           # stepped team goals (unique samples reviewed by anyone)
@@ -161,6 +161,13 @@ def _write_session_cookie(token: str | None):
     """, height=0)
 
 
+# Browser-side cookie reader (see components/session_cookie/index.html)
+_read_cookie_in_browser = components.declare_component(
+    "session_cookie_reader",
+    path=os.path.join(os.path.dirname(os.path.abspath(__file__)), "components", "session_cookie"),
+)
+
+
 def _user_exists(connection, username: str) -> bool:
     with connection.session as s:
         return s.execute(text("SELECT 1 FROM users WHERE username = :u"), {"u": username}).fetchone() is not None
@@ -180,31 +187,24 @@ if "show_register" not in st.session_state:
 if "cookie_action" in st.session_state:
     _write_session_cookie(st.session_state.pop("cookie_action"))
 
-# Temporary diagnostic: open the app with ?debug_cookies=1 to see which cookies the browser holds vs.
-# which ones reach the server (names only, no values). Remove once the cookie login works on Cloud.
-if st.query_params.get("debug_cookies"):
-    st.info(f"**Server sees cookies:** {sorted(st.context.cookies.keys()) or 'none'}")
-    components.html(f"""
-        <div style="font-family:sans-serif;font-size:14px" id="out"></div>
-        <script>
-        let info;
-        try {{
-            const names = window.parent.document.cookie.split(";").map(c => c.split("=")[0].trim()).filter(Boolean);
-            let topSameOrigin;
-            try {{ topSameOrigin = !!window.top.location.href; }} catch (e) {{ topSameOrigin = false; }}
-            info = "<b>Browser holds cookies:</b> " + (names.join(", ") || "none") +
-                   "<br><b>App frame URL:</b> " + window.parent.location.origin + window.parent.location.pathname +
-                   "<br><b>App is inside an iframe:</b> " + (window.parent !== window.top) +
-                   " &nbsp; <b>Top page same-origin:</b> " + topSameOrigin +
-                   "<br><b>Has {SESSION_COOKIE}:</b> " + names.includes("{SESSION_COOKIE}");
-        }} catch (e) {{ info = "<b>Cannot access app frame:</b> " + e; }}
-        document.getElementById("out").innerHTML = info;
-        </script>
-    """, height=110)
+# Restore the login from the cookie after a tab reload. Locally the server sees the cookie directly
+# (st.context.cookies); on Streamlit Cloud the proxy strips all cookies, so a tiny browser-side component
+# reads it and sends it back instead. After logging out we ignore the cookie for the rest of this session.
+_cookie_token = None
+if not st.session_state.authenticated and not st.session_state.get("logged_out"):
+    _cookie_token = st.context.cookies.get(SESSION_COOKIE)
+    if not _cookie_token and not st.session_state.get("cookie_checked"):
+        _browser_token = _read_cookie_in_browser(name=SESSION_COOKIE, key="session_cookie_reader", default=None)
+        if _browser_token is None:
+            # The component hasn't answered yet; it triggers a rerun as soon as it does (a split second)
+            st.caption("⏳ Checking login…")
+            if st.button("Taking too long? Go to the login page"):   # safety net if the component fails to load
+                st.session_state.cookie_checked = True
+                st.rerun()
+            st.stop()
+        st.session_state.cookie_checked = True
+        _cookie_token = _browser_token or None
 
-# Restore the login from the cookie after a tab reload. st.context.cookies is a snapshot taken when
-# the tab connected, so after logging out we must ignore it for the rest of this session.
-_cookie_token = st.context.cookies.get(SESSION_COOKIE)
 if not st.session_state.authenticated and _cookie_token and not st.session_state.get("logged_out"):
     _token_user = _read_session_token(_cookie_token)
     if _token_user and _user_exists(get_db_connection(), _token_user):

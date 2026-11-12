@@ -1,0 +1,35 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"></head>
+<body style="margin:0">
+<script>
+// Minimal Streamlit component (no build step / npm package): reads one cookie from the app's page
+// in the browser and returns its value to Python. Needed because Streamlit Community Cloud's proxy
+// strips cookies before they reach the server, so st.context.cookies is always empty there.
+function send(type, extra) {
+    window.parent.postMessage(Object.assign({isStreamlitMessage: true, type: type}, extra), "*");
+}
+
+function readCookie(name) {
+    try {
+        const doc = window.parent.document;   // the app frame (same origin as this component)
+        const hit = doc.cookie.split(";").map(c => c.trim()).find(c => c.startsWith(name + "="));
+        return hit ? decodeURIComponent(hit.slice(name.length + 1)) : "";
+    } catch (e) {
+        return "";                             // can't reach the app frame: treat as "no cookie"
+    }
+}
+
+let sent = false;
+window.addEventListener("message", (event) => {
+    if (event.data && event.data.type === "streamlit:render" && !sent) {
+        sent = true;
+        send("streamlit:setFrameHeight", {height: 0});
+        // "" means "checked, no cookie", so Python can tell it apart from "not answered yet" (None)
+        send("streamlit:setComponentValue", {value: readCookie(event.data.args.name), dataType: "json"});
+    }
+});
+send("streamlit:componentReady", {apiVersion: 1});
+</script>
+</body>
+</html>
