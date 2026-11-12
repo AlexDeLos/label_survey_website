@@ -178,6 +178,28 @@ if "show_register" not in st.session_state:
 if "cookie_action" in st.session_state:
     _write_session_cookie(st.session_state.pop("cookie_action"))
 
+# Temporary diagnostic: open the app with ?debug_cookies=1 to see which cookies the browser holds vs.
+# which ones reach the server (names only, no values). Remove once the cookie login works on Cloud.
+if st.query_params.get("debug_cookies"):
+    st.info(f"**Server sees cookies:** {sorted(st.context.cookies.keys()) or 'none'}")
+    components.html(f"""
+        <div style="font-family:sans-serif;font-size:14px" id="out"></div>
+        <script>
+        let info;
+        try {{
+            const names = window.parent.document.cookie.split(";").map(c => c.split("=")[0].trim()).filter(Boolean);
+            let topSameOrigin;
+            try {{ topSameOrigin = !!window.top.location.href; }} catch (e) {{ topSameOrigin = false; }}
+            info = "<b>Browser holds cookies:</b> " + (names.join(", ") || "none") +
+                   "<br><b>App frame URL:</b> " + window.parent.location.origin + window.parent.location.pathname +
+                   "<br><b>App is inside an iframe:</b> " + (window.parent !== window.top) +
+                   " &nbsp; <b>Top page same-origin:</b> " + topSameOrigin +
+                   "<br><b>Has {SESSION_COOKIE}:</b> " + names.includes("{SESSION_COOKIE}");
+        }} catch (e) {{ info = "<b>Cannot access app frame:</b> " + e; }}
+        document.getElementById("out").innerHTML = info;
+        </script>
+    """, height=110)
+
 # Restore the login from the cookie after a tab reload. st.context.cookies is a snapshot taken when
 # the tab connected, so after logging out we must ignore it for the rest of this session.
 _cookie_token = st.context.cookies.get(SESSION_COOKIE)
