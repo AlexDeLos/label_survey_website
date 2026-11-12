@@ -26,7 +26,7 @@ PAYLOAD_FILE_MA = "./label_evaluation/data/survey_data_MA.json"
 # Unified results file for the combined evaluation
 RESULTS_FILE = "./label_evaluation/data/evaluation_results_combined.csv"
 
-APP_VERSION = "0.1.2"   # survey app version, shown in the footer next to the label version
+APP_VERSION = "0.2.0"   # survey app version, shown in the footer next to the label version
 
 # Motivation features
 TEAM_GOALS = [500, 1000]                           # stepped team goals (unique samples reviewed by anyone)
@@ -347,6 +347,36 @@ def save_evaluation(username, study_id, sample_id, label_scores, comments):
     st.toast("Evaluation Saved", icon="💾")
 
 
+def load_user_skips(username) -> set[str]:
+    """Sample IDs this user chose to skip. Skips are per user: other people still get these samples."""
+    try:
+        with conn.session as s:
+            s.execute(text("""
+                CREATE TABLE IF NOT EXISTS skipped_samples (
+                    username TEXT NOT NULL, sample_id TEXT NOT NULL,
+                    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    PRIMARY KEY (username, sample_id)
+                )
+            """))
+            rows = s.execute(text("SELECT sample_id FROM skipped_samples WHERE username = :u"),
+                             {"u": username}).fetchall()
+            s.commit()
+        return {r[0] for r in rows}
+    except Exception as e:
+        st.error(f"Database Error: {e}")
+        return set()
+
+
+def save_skip(username, sample_id):
+    with conn.session as s:
+        s.execute(
+            text("INSERT INTO skipped_samples (username, sample_id) VALUES (:u, :sa) "
+                 "ON CONFLICT (username, sample_id) DO NOTHING"),
+            {"u": username, "sa": sample_id}
+        )
+        s.commit()
+
+
 # ==========================================
 # SMART SAMPLE ASSIGNMENT
 # ==========================================
@@ -367,12 +397,10 @@ def get_next_sample(all_sample_ids: list[str], username: str, results_df: pd.Dat
         eval_counts = {}
 
     def pick_from(candidates):
-        non_skipped = [s for s in candidates if s not in skip_ids]
-        skipped     = [s for s in candidates if s in skip_ids]
-        pool = non_skipped if non_skipped else skipped
-        return random.choice(pool) if pool else None
+        return random.choice(candidates) if candidates else None
 
-    eligible   = [s for s in all_sample_ids if s not in user_done]
+    # Samples this user evaluated or skipped are never offered to them again
+    eligible   = [s for s in all_sample_ids if s not in user_done and s not in skip_ids]
     priority_2 = [s for s in eligible if eval_counts.get(s, 0) == 2]
     priority_1 = [s for s in eligible if eval_counts.get(s, 0) == 1]
     priority_0 = [s for s in eligible if eval_counts.get(s, 0) == 0]
@@ -438,8 +466,9 @@ evaluated_samples = user_results["sample_id"].unique().tolist() if not user_resu
 # Session state for assignment and skips
 if "assigned_sample_id" not in st.session_state:
     st.session_state.assigned_sample_id = None
-if "skipped_ids" not in st.session_state:
-    st.session_state.skipped_ids = set()
+if st.session_state.get("skips_loaded_for") != username:
+    st.session_state.skipped_ids      = load_user_skips(username)   # persisted, so skips survive logouts
+    st.session_state.skips_loaded_for = username
 if "session_count" not in st.session_state:
     st.session_state.session_count = 0
 
@@ -455,6 +484,7 @@ if st.sidebar.button("Logout"):
     st.session_state.username            = ""
     st.session_state.assigned_sample_id  = None
     st.session_state.skipped_ids         = set()
+    st.session_state.skips_loaded_for    = None
     st.session_state.show_register       = False
     st.session_state.session_count       = 0
     st.session_state.cookie_action       = None   # delete the cookie on the next run
@@ -470,7 +500,8 @@ else:
 
 remaining = sum(
     1 for s in all_sample_ids
-    if s not in evaluated_samples and other_eval_counts.get(s, 0) < 3
+    if s not in evaluated_samples and s not in st.session_state.skipped_ids
+    and other_eval_counts.get(s, 0) < 3
 )
 st.sidebar.write(f"**Your Evaluations:** {len(evaluated_samples)}")
 st.sidebar.write(f"**Samples Still Needing You:** {remaining}")
@@ -554,6 +585,34 @@ study_id       = current_sample["study_id"]
 sample_id      = current_sample["sample_id"]
 
 # ── Header ─────────────────────────────────────────────────────────────────────
+
+def _show_next_sample_overlay(message: str):
+    """Full-screen loading overlay: confirms the click and blocks double-submits. It stays
+    visible through the rerun until Streamlit redraws this slot with the next sample."""
+    st.markdown("""
+        <style>
+        .next-sample-overlay {
+            position: fixed; inset: 0; z-index: 999999;
+            display: flex; flex-direction: column; align-items: center; justify-content: center;
+            background: rgba(255, 255, 255, 0.85); backdrop-filter: blur(2px);
+            font-size: 1.2rem; font-weight: 600; color: #1b5e20;
+        }
+        @media (prefers-color-scheme: dark) {
+            .next-sample-overlay { background: rgba(14, 17, 23, 0.85); color: #81c784; }
+        }
+        .next-sample-spinner {
+            width: 56px; height: 56px; margin-bottom: 18px; border-radius: 50%;
+            border: 6px solid rgba(46, 125, 50, 0.2); border-top-color: #2e7d32;
+            animation: next-sample-spin 0.8s linear infinite;
+        }
+        @keyframes next-sample-spin { to { transform: rotate(360deg); } }
+        </style>
+        <div class="next-sample-overlay">
+            <div class="next-sample-spinner"></div>
+            <div>{message}</div>
+        </div>
+    """.replace("{message}", message), unsafe_allow_html=True)
+
 
 col1, col2 = st.columns([1, 2])
 
@@ -675,38 +734,24 @@ with col1:
         if is_new_eval and (new_total in MILESTONES or (new_total > 1000 and new_total % 500 == 0)):
             st.session_state.milestone_hit = new_total
 
-        # Full-screen loading overlay: confirms the click and blocks double-submits. It stays
-        # visible through the rerun until Streamlit redraws this slot with the next sample.
-        st.markdown("""
-            <style>
-            .next-sample-overlay {
-                position: fixed; inset: 0; z-index: 999999;
-                display: flex; flex-direction: column; align-items: center; justify-content: center;
-                background: rgba(255, 255, 255, 0.85); backdrop-filter: blur(2px);
-                font-size: 1.2rem; font-weight: 600; color: #1b5e20;
-            }
-            @media (prefers-color-scheme: dark) {
-                .next-sample-overlay { background: rgba(14, 17, 23, 0.85); color: #81c784; }
-            }
-            .next-sample-spinner {
-                width: 56px; height: 56px; margin-bottom: 18px; border-radius: 50%;
-                border: 6px solid rgba(46, 125, 50, 0.2); border-top-color: #2e7d32;
-                animation: next-sample-spin 0.8s linear infinite;
-            }
-            @keyframes next-sample-spin { to { transform: rotate(360deg); } }
-            </style>
-            <div class="next-sample-overlay">
-                <div class="next-sample-spinner"></div>
-                <div>💾 Sample #{session_count} this session — fetching the next one…</div>
-            </div>
-        """.replace("{session_count}", str(st.session_state.session_count)), unsafe_allow_html=True)
+        _show_next_sample_overlay(f"💾 Sample #{st.session_state.session_count} this session — fetching the next one…")
 
         _t0 = time.monotonic()
         save_evaluation(username, study_id, sample_id, current_scores, comments)
         # Keep the overlay up briefly even when saving is instant, so users notice it
         time.sleep(max(0.0, 0.8 - (time.monotonic() - _t0)))
         st.session_state.assigned_sample_id = None
-        st.session_state.skipped_ids.discard(sample_id)
+        st.rerun()
+
+    # Skip: never shown to this user again, still shown to everyone else
+    if st.button("⏭️ Skip this sample", key=f"btn_skip_{sample_id}", use_container_width=True,
+                 help="Not sure about this one? Skip it. It won't be shown to you again, but others will still get it."):
+        _show_next_sample_overlay("⏭️ Sample skipped — fetching the next one…")
+        _t0 = time.monotonic()
+        save_skip(username, sample_id)
+        st.session_state.skipped_ids.add(sample_id)
+        time.sleep(max(0.0, 0.5 - (time.monotonic() - _t0)))
+        st.session_state.assigned_sample_id = None
         st.rerun()
 
 # ── RIGHT COLUMN: Metadata ─────────────────────────────────────────────────────
