@@ -26,6 +26,8 @@ PAYLOAD_FILE_MA = "./label_evaluation/data/survey_data_MA.json"
 # Unified results file for the combined evaluation
 RESULTS_FILE = "./label_evaluation/data/evaluation_results_combined.csv"
 
+APP_VERSION = "0.1.0"   # survey app version, shown in the footer next to the label version
+
 # Motivation features
 TEAM_GOALS = [500, 1000]                           # stepped team goals (unique samples reviewed by anyone)
 MILESTONES = {10, 25, 50, 100, 250, 500, 1000}     # personal totals that trigger a celebration (+ every 500 after 1000)
@@ -422,7 +424,7 @@ def _render_version_footer():
     versions = sorted({item.get("label_version", "unknown") for item in data})
     st.markdown(
         f"<div style='text-align:right; font-size:10px; opacity:0.4; margin-top:2em;'>"
-        f"labels: {', '.join(versions)}</div>",
+        f"app v{APP_VERSION} · labels: {', '.join(versions)}</div>",
         unsafe_allow_html=True,
     )
 
