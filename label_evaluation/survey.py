@@ -33,6 +33,21 @@ MILESTONES = {10, 25, 50, 100, 250, 500, 1000}     # personal totals that trigge
 st.set_page_config(layout="wide", page_title="Label Evaluation Tool")
 
 # ==========================================
+# DATABASE CONNECTION
+# ==========================================
+
+def get_db_connection():
+    """Single shared DB connection. For Postgres, psycopg's automatic prepared statements are disabled
+    (prepare_threshold=None): the Supabase transaction pooler (port 6543) hands each transaction to a
+    different server connection, so a statement prepared on one is missing on the next ->
+    InvalidSqlStatementName. pool_pre_ping also replaces connections the pooler has silently dropped."""
+    if str(st.secrets["connections"]["results_db"].get("url", "")).startswith("postgresql"):
+        return st.connection("results_db", type="sql",
+                             connect_args={"prepare_threshold": None}, pool_pre_ping=True)
+    return st.connection("results_db", type="sql")
+
+
+# ==========================================
 # USER MANAGEMENT (DB-backed, bcrypt)
 # ==========================================
 
@@ -168,14 +183,14 @@ if "cookie_action" in st.session_state:
 _cookie_token = st.context.cookies.get(SESSION_COOKIE)
 if not st.session_state.authenticated and _cookie_token and not st.session_state.get("logged_out"):
     _token_user = _read_session_token(_cookie_token)
-    if _token_user and _user_exists(st.connection("results_db", type="sql"), _token_user):
+    if _token_user and _user_exists(get_db_connection(), _token_user):
         st.session_state.authenticated = True
         st.session_state.username = _token_user
     else:
         _write_session_cookie(None)   # expired or tampered: delete it and show the login form
 
 if not st.session_state.authenticated:
-    _conn_early = st.connection("results_db", type="sql")
+    _conn_early = get_db_connection()
     _ensure_users_table(_conn_early)
 
     st.title("🔒 Login Required")
@@ -258,7 +273,7 @@ if not st.session_state.authenticated:
 # PERSISTENT SAVING (SQL)
 # ==========================================
 
-conn = st.connection("results_db", type="sql")
+conn = get_db_connection()
 
 
 def load_results():
