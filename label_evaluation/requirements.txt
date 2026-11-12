@@ -1,4 +1,4 @@
-streamlit
+streamlit>=1.37  # st.context.cookies (login cookie)
 pandas
 sqlalchemy
 psycopg[binary]

@@ -1,9 +1,13 @@
+import base64
 import contextlib
+import hashlib
+import hmac
 import json
 import os
 import random
 import pandas as pd
 import streamlit as st
+import streamlit.components.v1 as components
 import sys
 import time
 from sqlalchemy import text
@@ -21,6 +25,10 @@ PAYLOAD_FILE_MA = "./label_evaluation/data/survey_data_MA.json"
 
 # Unified results file for the combined evaluation
 RESULTS_FILE = "./label_evaluation/data/evaluation_results_combined.csv"
+
+# Motivation features
+TEAM_GOALS = [500, 1000]                           # stepped team goals (unique samples reviewed by anyone)
+MILESTONES = {10, 25, 50, 100, 250, 500, 1000}     # personal totals that trigger a celebration (+ every 500 after 1000)
 
 st.set_page_config(layout="wide", page_title="Label Evaluation Tool")
 
@@ -87,6 +95,61 @@ def _register_user(connection, username: str, password: str) -> tuple[bool, str]
 
 
 # ==========================================
+# "REMEMBER ME" TOKEN (survives tab reloads)
+# ==========================================
+# After login a signed token "<username>.<expiry>.<signature>" is stored in a browser cookie.
+# On reload it is read via st.context.cookies and verified with HMAC, so users don't have to
+# log in again until it expires. Streamlit can't set cookies itself, so a tiny JS snippet does it.
+
+SESSION_TOKEN_DAYS = 14
+SESSION_COOKIE     = "label_survey_session"
+
+
+def _token_secret() -> bytes:
+    """Signing key: `auth_token_secret` from secrets.toml if set, otherwise derived from the DB URL (also secret)."""
+    secret = st.secrets.get("auth_token_secret") or st.secrets["connections"]["results_db"]["url"]
+    return hashlib.sha256(f"label-survey-session:{secret}".encode()).digest()
+
+
+def _make_session_token(username: str) -> str:
+    user_b64 = base64.urlsafe_b64encode(username.encode()).decode().rstrip("=")
+    expiry   = str(int(time.time()) + SESSION_TOKEN_DAYS * 86400)
+    payload  = f"{user_b64}.{expiry}"
+    sig      = hmac.new(_token_secret(), payload.encode(), hashlib.sha256).hexdigest()
+    return f"{payload}.{sig}"
+
+
+def _read_session_token(token: str) -> str | None:
+    """Returns the username if the token is authentic and not expired, else None."""
+    try:
+        user_b64, expiry, sig = token.split(".")
+        expected = hmac.new(_token_secret(), f"{user_b64}.{expiry}".encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(sig, expected) or int(expiry) < time.time():
+            return None
+        return base64.urlsafe_b64decode(user_b64 + "=" * (-len(user_b64) % 4)).decode()
+    except Exception:
+        return None
+
+
+def _write_session_cookie(token: str | None):
+    """Sets (token) or deletes (None) the session cookie on the app's page via an invisible component."""
+    max_age = SESSION_TOKEN_DAYS * 86400 if token else 0
+    value   = token or ""
+    components.html(f"""
+        <script>
+        const secure = window.parent.location.protocol === "https:" ? "; Secure" : "";
+        window.parent.document.cookie =
+            "{SESSION_COOKIE}={value}; path=/; max-age={max_age}; SameSite=Lax" + secure;
+        </script>
+    """, height=0)
+
+
+def _user_exists(connection, username: str) -> bool:
+    with connection.session as s:
+        return s.execute(text("SELECT 1 FROM users WHERE username = :u"), {"u": username}).fetchone() is not None
+
+
+# ==========================================
 # AUTHENTICATION GATE
 # ==========================================
 
@@ -95,6 +158,21 @@ if "authenticated" not in st.session_state:
     st.session_state.username = ""
 if "show_register" not in st.session_state:
     st.session_state.show_register = False
+
+# Cookie writes are queued by login/logout (which rerun immediately) and flushed here on the next run
+if "cookie_action" in st.session_state:
+    _write_session_cookie(st.session_state.pop("cookie_action"))
+
+# Restore the login from the cookie after a tab reload. st.context.cookies is a snapshot taken when
+# the tab connected, so after logging out we must ignore it for the rest of this session.
+_cookie_token = st.context.cookies.get(SESSION_COOKIE)
+if not st.session_state.authenticated and _cookie_token and not st.session_state.get("logged_out"):
+    _token_user = _read_session_token(_cookie_token)
+    if _token_user and _user_exists(st.connection("results_db", type="sql"), _token_user):
+        st.session_state.authenticated = True
+        st.session_state.username = _token_user
+    else:
+        _write_session_cookie(None)   # expired or tampered: delete it and show the login form
 
 if not st.session_state.authenticated:
     _conn_early = st.connection("results_db", type="sql")
@@ -124,7 +202,7 @@ if not st.session_state.authenticated:
             - After that or if you have an account; Login and evaluate labels for samples.
 
             ### 🏆 Keep an eye on the leaderboard
-            If by the end of the survey you have been the MVP (Most Valued Participant) you can get a prize (TO BE DETERMINED)
+            The top 3 participants at the end of the survey each get a €25 gift card! 🎁
             """
         )
     col_toggle1, col_toggle2 = st.columns([1, 1])
@@ -150,6 +228,8 @@ if not st.session_state.authenticated:
                 if _verify_password(_conn_early, user_input.strip(), pwd_input):
                     st.session_state.authenticated = True
                     st.session_state.username = user_input.strip()
+                    st.session_state.cookie_action = _make_session_token(user_input.strip())
+                    st.session_state.logged_out = False
                     st.rerun()
                 else:
                     st.error("Invalid username or password. Please try again.")
@@ -321,6 +401,8 @@ if "assigned_sample_id" not in st.session_state:
     st.session_state.assigned_sample_id = None
 if "skipped_ids" not in st.session_state:
     st.session_state.skipped_ids = set()
+if "session_count" not in st.session_state:
+    st.session_state.session_count = 0
 
 if st.session_state.assigned_sample_id is None:
     st.session_state.assigned_sample_id = get_next_sample(
@@ -335,6 +417,9 @@ if st.sidebar.button("Logout"):
     st.session_state.assigned_sample_id  = None
     st.session_state.skipped_ids         = set()
     st.session_state.show_register       = False
+    st.session_state.session_count       = 0
+    st.session_state.cookie_action       = None   # delete the cookie on the next run
+    st.session_state.logged_out          = True
     st.rerun()
 
 st.sidebar.divider()
@@ -350,6 +435,22 @@ remaining = sum(
 )
 st.sidebar.write(f"**Your Evaluations:** {len(evaluated_samples)}")
 st.sidebar.write(f"**Samples Still Needing You:** {remaining}")
+st.sidebar.write(f"**This Session:** {st.session_state.session_count}")
+
+# Shared team goal: unique samples that have at least one evaluation from anyone
+# The goal moves up to the next step once the current one is passed
+team_done    = results_df["sample_id"].nunique() if not results_df.empty else 0
+goals_passed = [g for g in TEAM_GOALS if team_done >= g]
+team_goal    = next((g for g in TEAM_GOALS if team_done < g), TEAM_GOALS[-1])
+st.sidebar.divider()
+st.sidebar.subheader("🎯 Team Goal")
+if goals_passed and team_done < TEAM_GOALS[-1]:
+    st.sidebar.caption(f"✅ {goals_passed[-1]:,} reached — new target: {team_goal:,}!")
+st.sidebar.progress(min(team_done / team_goal, 1.0))
+if team_done >= TEAM_GOALS[-1]:
+    st.sidebar.success(f"Final goal reached! {team_done:,} / {team_goal:,} samples reviewed 🎉")
+else:
+    st.sidebar.caption(f"{team_done:,} / {team_goal:,} samples reviewed — {team_goal - team_done:,} to go")
 
 if not results_df.empty:
     st.sidebar.download_button(
@@ -385,6 +486,12 @@ if not results_df.empty:
 else:
     st.sidebar.info("No evaluations yet. Be the first!")
 
+# ── Milestone celebration (flagged by the submit handler before the rerun) ─────
+milestone = st.session_state.pop("milestone_hit", None)
+if milestone:
+    st.balloons()
+    st.toast(f"🎉 {milestone} evaluations — amazing work!", icon="🏅")
+
 # ── Resolve current sample ─────────────────────────────────────────────────────
 current_sample_id = st.session_state.assigned_sample_id
 
@@ -404,6 +511,7 @@ col1, col2 = st.columns([1, 2])
 # ── LEFT COLUMN: Scoring form ──────────────────────────────────────────────────
 with col1:
     st.subheader("📝 Algorithm Labels & Scoring")
+    st.info(f"🧬 **Study ID:** `{study_id}` &nbsp;&nbsp;|&nbsp;&nbsp; 🆔 **Sample ID:** `{sample_id}`")
     # TULIP's "unspecified_notes" are model notes, not labels: hide them from reviewers (kept in the data)
     label_entries = [
         e for e in current_sample.get("label_entries", [])
@@ -512,6 +620,12 @@ with col1:
             for cat in current_scores:
                 current_scores[cat] = "Correct"
 
+        st.session_state.session_count += 1
+        is_new_eval = sample_id not in evaluated_samples   # re-submitting an old sample doesn't raise the total
+        new_total   = len(evaluated_samples) + int(is_new_eval)
+        if is_new_eval and (new_total in MILESTONES or (new_total > 1000 and new_total % 500 == 0)):
+            st.session_state.milestone_hit = new_total
+
         # Full-screen loading overlay: confirms the click and blocks double-submits. It stays
         # visible through the rerun until Streamlit redraws this slot with the next sample.
         st.markdown("""
@@ -534,9 +648,9 @@ with col1:
             </style>
             <div class="next-sample-overlay">
                 <div class="next-sample-spinner"></div>
-                <div>💾 Evaluation saved — fetching the next sample…</div>
+                <div>💾 Sample #{session_count} this session — fetching the next one…</div>
             </div>
-        """, unsafe_allow_html=True)
+        """.replace("{session_count}", str(st.session_state.session_count)), unsafe_allow_html=True)
 
         _t0 = time.monotonic()
         save_evaluation(username, study_id, sample_id, current_scores, comments)
@@ -549,9 +663,7 @@ with col1:
 # ── RIGHT COLUMN: Metadata ─────────────────────────────────────────────────────
 with col2:
     st.subheader("📄 Reference Metadata")
-    
-    # Modernized layout using small metrics/columns or clean inline layout
-    st.info(f"🧬 **Study ID:** `{study_id}` &nbsp;&nbsp;|&nbsp;&nbsp; 🆔 **Sample ID:** `{sample_id}`")
+
 
     # Dynamic Header based on Source
     source = current_sample.get("source_type", "Unknown")
