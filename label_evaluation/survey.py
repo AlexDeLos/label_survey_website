@@ -26,7 +26,7 @@ PAYLOAD_FILE_MA = "./label_evaluation/data/survey_data_MA.json"
 # Unified results file for the combined evaluation
 RESULTS_FILE = "./label_evaluation/data/evaluation_results_combined.csv"
 
-APP_VERSION = "0.1.1"   # survey app version, shown in the footer next to the label version
+APP_VERSION = "0.1.2"   # survey app version, shown in the footer next to the label version
 
 # Motivation features
 TEAM_GOALS = [500, 1000]                           # stepped team goals (unique samples reviewed by anyone)
@@ -479,17 +479,27 @@ st.sidebar.write(f"**This Session:** {st.session_state.session_count}")
 # Shared team goal: unique samples that have at least one evaluation from anyone
 # The goal moves up to the next step once the current one is passed
 team_done    = results_df["sample_id"].nunique() if not results_df.empty else 0
-goals_passed = [g for g in TEAM_GOALS if team_done >= g]
 team_goal    = next((g for g in TEAM_GOALS if team_done < g), TEAM_GOALS[-1])
 st.sidebar.divider()
-st.sidebar.subheader("🎯 Team Goal")
-if goals_passed and team_done < TEAM_GOALS[-1]:
-    st.sidebar.caption(f"✅ {goals_passed[-1]:,} reached — new target: {team_goal:,}!")
+st.sidebar.subheader("🎯 Team Goals")
+# Checklist of every step so it's clear which goal is first and which comes next
+goal_lines = []
+for i, g in enumerate(TEAM_GOALS, start=1):
+    if team_done >= g:
+        goal_lines.append(f"✅ ~~Goal {i}: {g:,} samples~~ — reached!")
+    elif g == team_goal:
+        goal_lines.append(f"▶️ **Goal {i}: {g:,} samples** — current goal")
+    else:
+        goal_lines.append(f"🔒 Goal {i}: {g:,} samples — next goal")
+st.sidebar.markdown("  \n".join(goal_lines))
+
 st.sidebar.progress(min(team_done / team_goal, 1.0))
 if team_done >= TEAM_GOALS[-1]:
-    st.sidebar.success(f"Final goal reached! {team_done:,} / {team_goal:,} samples reviewed 🎉")
+    st.sidebar.success(f"All goals reached! {team_done:,} samples reviewed 🎉")
 else:
-    st.sidebar.caption(f"{team_done:,} / {team_goal:,} samples reviewed — {team_goal - team_done:,} to go")
+    goal_no = TEAM_GOALS.index(team_goal) + 1
+    st.sidebar.caption(f"Goal {goal_no} of {len(TEAM_GOALS)}: {team_done:,} / {team_goal:,} samples reviewed "
+                       f"— {team_goal - team_done:,} to go")
 
 if not results_df.empty:
     st.sidebar.download_button(
