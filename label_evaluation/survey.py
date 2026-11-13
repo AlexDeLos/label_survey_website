@@ -26,7 +26,7 @@ PAYLOAD_FILE_MA = "./label_evaluation/data/survey_data_MA.json"
 # Unified results file for the combined evaluation
 RESULTS_FILE = "./label_evaluation/data/evaluation_results_combined.csv"
 
-APP_VERSION = "0.2.0"   # survey app version, shown in the footer next to the label version
+APP_VERSION = "0.2.1"   # survey app version, shown in the footer next to the label version
 
 # Motivation features
 TEAM_GOALS = [500, 1000]                           # stepped team goals (unique samples reviewed by anyone)
@@ -54,8 +54,7 @@ def get_db_connection():
 # ==========================================
 
 def _ensure_users_table(connection):
-    """Create users table and seed legacy accounts on first run."""
-    import bcrypt
+    """Create the users table if it doesn't exist yet."""
     with connection.session as s:
         s.execute(text("""
             CREATE TABLE IF NOT EXISTS users (
@@ -64,17 +63,6 @@ def _ensure_users_table(connection):
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         """))
-        legacy = {"researcher1": "pass123", "researcher2": "tulip2026", "alex": "admin"}
-        for uname, pwd in legacy.items():
-            existing = s.execute(
-                text("SELECT 1 FROM users WHERE username = :u"), {"u": uname}
-            ).fetchone()
-            if not existing:
-                hashed = bcrypt.hashpw(pwd.encode(), bcrypt.gensalt()).decode()
-                s.execute(
-                    text("INSERT INTO users (username, password_hash) VALUES (:u, :h)"),
-                    {"u": uname, "h": hashed}
-                )
         s.commit()
 
 
