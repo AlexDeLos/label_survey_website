@@ -26,7 +26,7 @@ PAYLOAD_FILE_MA = "./label_evaluation/data/survey_data_MA.json"
 # Unified results file for the combined evaluation
 RESULTS_FILE = "./label_evaluation/data/evaluation_results_combined.csv"
 
-APP_VERSION = "0.2.1"   # survey app version, shown in the footer next to the label version
+APP_VERSION = "0.3.0"   # survey app version, shown in the footer next to the label version
 
 # Motivation features
 TEAM_GOALS = [500, 1000]                           # stepped team goals (unique samples reviewed by anyone)
@@ -369,6 +369,29 @@ def save_skip(username, sample_id):
 # SMART SAMPLE ASSIGNMENT
 # ==========================================
 
+def completed_samples(results_df: pd.DataFrame) -> set[str]:
+    """Samples that need no more evaluations: 3+ answers, or exactly 2 answers that agree on every label.
+    Read-only: nothing is written to the database; comments are ignored when comparing."""
+    if results_df.empty:
+        return set()
+
+    def parse(scores):
+        try:
+            return json.loads(scores) if isinstance(scores, str) else None
+        except (ValueError, TypeError):
+            return None
+
+    done = set()
+    for sample_id, group in results_df.groupby("sample_id"):
+        if len(group) >= 3:
+            done.add(sample_id)
+        elif len(group) == 2:
+            a, b = (parse(s) for s in group["label_scores"])
+            if a and b and a == b:   # same label set and same score for every label
+                done.add(sample_id)
+    return done
+
+
 def get_next_sample(all_sample_ids: list[str], username: str, results_df: pd.DataFrame, skip_ids: set[str] = None) -> str | None:
     if skip_ids is None:
         skip_ids = set()
@@ -388,7 +411,9 @@ def get_next_sample(all_sample_ids: list[str], username: str, results_df: pd.Dat
         return random.choice(candidates) if candidates else None
 
     # Samples this user evaluated or skipped are never offered to them again
-    eligible   = [s for s in all_sample_ids if s not in user_done and s not in skip_ids]
+    # ...and samples already complete (3 answers, or 2 that fully agree) are not offered to anyone
+    done_ids   = completed_samples(results_df)
+    eligible   = [s for s in all_sample_ids if s not in user_done and s not in skip_ids and s not in done_ids]
     priority_2 = [s for s in eligible if eval_counts.get(s, 0) == 2]
     priority_1 = [s for s in eligible if eval_counts.get(s, 0) == 1]
     priority_0 = [s for s in eligible if eval_counts.get(s, 0) == 0]
@@ -481,15 +506,11 @@ if st.sidebar.button("Logout"):
 
 st.sidebar.divider()
 
-if not results_df.empty:
-    other_eval_counts = results_df[results_df["username"] != username].groupby("sample_id").size().to_dict()
-else:
-    other_eval_counts = {}
-
+completed_ids = completed_samples(results_df)
 remaining = sum(
     1 for s in all_sample_ids
     if s not in evaluated_samples and s not in st.session_state.skipped_ids
-    and other_eval_counts.get(s, 0) < 3
+    and s not in completed_ids
 )
 st.sidebar.write(f"**Your Evaluations:** {len(evaluated_samples)}")
 st.sidebar.write(f"**Samples Still Needing You:** {remaining}")
